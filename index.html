@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LoL Comp Builder</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="header-left">
+      <span class="logo">⚔</span>
+      <h1>LoL Comp Builder</h1>
+    </div>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="tab-builder">Manual Builder</button>
+      <button class="tab-btn"        data-tab="tab-suggester">Team Suggester</button>
+      <button class="tab-btn"        data-tab="tab-saved">
+        Saved Comps
+        <span class="saved-count-badge" id="saved-count-badge" style="display:none"></span>
+      </button>
+    </nav>
+  </header>
+
+  <!-- ══════════════ TAB 1 – MANUAL BUILDER ══════════════ -->
+  <div id="tab-builder" class="tab-panel active">
+
+    <!-- Comp slots -->
+    <section class="comp-section">
+      <h2 class="section-label">Your Comp <span class="section-sublabel">— drag backups to B1/B2/B3 in case of bans</span></h2>
+      <div class="comp-slots">
+
+        <div class="slot-group">
+          <div class="slot" data-slot="top" data-label="Top"></div>
+          <div class="backups-row">
+            <div class="backup-slot" data-slot="top" data-backup="0"><span class="backup-num">B1</span></div>
+            <div class="backup-slot" data-slot="top" data-backup="1"><span class="backup-num">B2</span></div>
+            <div class="backup-slot" data-slot="top" data-backup="2"><span class="backup-num">B3</span></div>
+            <div class="backup-slot" data-slot="top" data-backup="3"><span class="backup-num">B4</span></div>
+            <div class="backup-slot" data-slot="top" data-backup="4"><span class="backup-num">B5</span></div>
+          </div>
+        </div>
+
+        <div class="slot-group">
+          <div class="slot" data-slot="jungle" data-label="Jungle"></div>
+          <div class="backups-row">
+            <div class="backup-slot" data-slot="jungle" data-backup="0"><span class="backup-num">B1</span></div>
+            <div class="backup-slot" data-slot="jungle" data-backup="1"><span class="backup-num">B2</span></div>
+            <div class="backup-slot" data-slot="jungle" data-backup="2"><span class="backup-num">B3</span></div>
+            <div class="backup-slot" data-slot="jungle" data-backup="3"><span class="backup-num">B4</span></div>
+            <div class="backup-slot" data-slot="jungle" data-backup="4"><span class="backup-num">B5</span></div>
+          </div>
+        </div>
+
+        <div class="slot-group">
+          <div class="slot" data-slot="mid" data-label="Mid"></div>
+          <div class="backups-row">
+            <div class="backup-slot" data-slot="mid" data-backup="0"><span class="backup-num">B1</span></div>
+            <div class="backup-slot" data-slot="mid" data-backup="1"><span class="backup-num">B2</span></div>
+            <div class="backup-slot" data-slot="mid" data-backup="2"><span class="backup-num">B3</span></div>
+            <div class="backup-slot" data-slot="mid" data-backup="3"><span class="backup-num">B4</span></div>
+            <div class="backup-slot" data-slot="mid" data-backup="4"><span class="backup-num">B5</span></div>
+          </div>
+        </div>
+
+        <div class="slot-group">
+          <div class="slot" data-slot="bot" data-label="Bot"></div>
+          <div class="backups-row">
+            <div class="backup-slot" data-slot="bot" data-backup="0"><span class="backup-num">B1</span></div>
+            <div class="backup-slot" data-slot="bot" data-backup="1"><span class="backup-num">B2</span></div>
+            <div class="backup-slot" data-slot="bot" data-backup="2"><span class="backup-num">B3</span></div>
+            <div class="backup-slot" data-slot="bot" data-backup="3"><span class="backup-num">B4</span></div>
+            <div class="backup-slot" data-slot="bot" data-backup="4"><span class="backup-num">B5</span></div>
+          </div>
+        </div>
+
+        <div class="slot-group">
+          <div class="slot" data-slot="support" data-label="Support"></div>
+          <div class="backups-row">
+            <div class="backup-slot" data-slot="support" data-backup="0"><span class="backup-num">B1</span></div>
+            <div class="backup-slot" data-slot="support" data-backup="1"><span class="backup-num">B2</span></div>
+            <div class="backup-slot" data-slot="support" data-backup="2"><span class="backup-num">B3</span></div>
+            <div class="backup-slot" data-slot="support" data-backup="3"><span class="backup-num">B4</span></div>
+            <div class="backup-slot" data-slot="support" data-backup="4"><span class="backup-num">B5</span></div>
+          </div>
+        </div>
+
+      </div>
+      <div class="comp-stats" id="comp-stats"></div>
+      <div class="comp-actions">
+        <button id="clear-comp" class="ghost-btn">Clear</button>
+        <button id="save-comp-btn" class="save-btn">💾 Save Comp</button>
+      </div>
+    </section>
+
+    <!-- Filter bar -->
+    <div class="filter-bar">
+      <input type="text" id="search" placeholder="Search champion…" />
+      <select id="role-filter">
+        <option value="all">All Roles</option>
+        <option value="Tank">Tank</option>
+        <option value="Fighter">Fighter</option>
+        <option value="Mage">Mage</option>
+        <option value="Assassin">Assassin / Slayer</option>
+        <option value="Marksman">Marksman</option>
+        <option value="Support">Support</option>
+      </select>
+      <span id="champ-count" class="champ-count"></span>
+    </div>
+
+    <!-- Subclass pills -->
+    <div class="pills-bar">
+      <div class="archetype-pills" id="archetype-pills"></div>
+    </div>
+
+    <!-- Champion grid -->
+    <div class="champion-grid" id="champion-grid">
+      <div class="loading">Loading champions…</div>
+    </div>
+  </div>
+
+  <!-- ══════════════ TAB 2 – TEAM SUGGESTER ══════════════ -->
+  <div id="tab-suggester" class="tab-panel">
+    <div class="suggester-layout">
+
+      <!-- LEFT: Player pools -->
+      <aside class="players-panel">
+        <div class="panel-header">
+          <h2>Team Pools</h2>
+          <div class="upload-row">
+            <input id="excel-file-input" type="file" accept=".xlsx,.xls,.csv" style="display:none" />
+            <button id="upload-excel-btn" class="accent-btn">📂 Upload Excel</button>
+            <button id="dl-template-btn" class="ghost-btn">⬇ Template</button>
+          </div>
+          <div id="upload-zone" class="upload-zone">
+            Drag &amp; drop your <strong>.xlsx</strong> file here<br/>
+            <small>One row per player · Column A = Name · Columns B+ = Champions</small>
+          </div>
+        </div>
+        <div id="player-cards" class="player-cards"></div>
+      </aside>
+
+      <!-- RIGHT: Comp picker + results -->
+      <main class="suggester-main">
+        <div class="panel-header">
+          <h2>Select Comp Type</h2>
+        </div>
+        <div class="comp-picker" id="comp-picker"></div>
+
+        <div class="generate-row">
+          <button id="generate-btn" class="generate-btn">⚡ Generate Best Comps</button>
+        </div>
+
+        <div class="panel-header">
+          <h2>Suggestions</h2>
+        </div>
+        <div id="suggestions-output" class="suggestions-output">
+          <div class="no-suggestions">Select a comp type and click Generate.</div>
+        </div>
+      </main>
+
+    </div>
+  </div>
+
+  <!-- ══════════════ TAB 3 – SAVED COMPS ══════════════ -->
+  <div id="tab-saved" class="tab-panel">
+    <div class="saved-header">
+      <div class="saved-header-left">
+        <h2>Saved Comps</h2>
+        <span id="saved-total" class="saved-total"></span>
+      </div>
+      <div class="saved-header-right">
+        <input id="saved-search" type="text" placeholder="Search saved comps…" class="saved-search-input" />
+        <button id="clear-all-saved" class="ghost-btn danger-hover">🗑 Clear All</button>
+      </div>
+    </div>
+    <div id="saved-comps-grid" class="saved-comps-grid">
+      <div class="saved-empty">
+        <div class="saved-empty-icon">📋</div>
+        <div>No saved comps yet.</div>
+        <div class="saved-empty-sub">Build a comp and hit <strong>Save Comp</strong> to save it here.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- SAVE MODAL -->
+<div id="save-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h3>Save Comp</h3>
+    <div class="modal-preview" id="modal-preview"></div>
+    <label class="modal-label">Name</label>
+    <input id="save-name-input" class="modal-input" type="text" placeholder="e.g. Engage vs poke teams" maxlength="60" />
+    <label class="modal-label">Notes <span style="opacity:.5">(optional)</span></label>
+    <textarea id="save-notes-input" class="modal-textarea" placeholder="Win condition, strategy notes…" maxlength="300"></textarea>
+    <div class="modal-actions">
+      <button id="modal-cancel" class="ghost-btn">Cancel</button>
+      <button id="modal-confirm" class="accent-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="tooltip" class="tooltip hidden"></div>
+
+<!-- SheetJS for Excel parsing -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+<script src="data.js"></script>
+<script src="team-data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
