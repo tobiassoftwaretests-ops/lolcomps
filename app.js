@@ -45,6 +45,20 @@ function syncTeamPlayersFromRoster() {
   });
 }
 
+// Persist roster edits (players added/removed/renamed, pool changes) per browser
+const ROSTER_KEY = 'lol_team_roster_v1';
+function saveRoster() {
+  if (!teamRoster) return;
+  const data = Object.fromEntries(ROLES.map(r => [r, {
+    active: teamRoster[r].active,
+    players: teamRoster[r].players.map(p => ({
+      name: p.name,
+      champs: p.champions.map(c => c.id),
+    })),
+  }]));
+  localStorage.setItem(ROSTER_KEY, JSON.stringify(data));
+}
+
 // Saved comps state
 const STORAGE_KEY = 'lol_saved_comps';
 let savedComps = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
@@ -434,6 +448,23 @@ function loadTeamData() {
     });
     slot.players.push(player);
   });
+
+  // Local edits saved in this browser override the built-in defaults
+  try {
+    const saved = JSON.parse(localStorage.getItem(ROSTER_KEY) || 'null');
+    if (saved) {
+      ROLES.forEach(role => {
+        const s = saved[role];
+        if (!s || !Array.isArray(s.players) || !s.players.length) return;
+        teamRoster[role].players = s.players.map(p => ({
+          name: String(p.name || '—'),
+          champions: (p.champs || []).map(id => findChamp(id)).filter(Boolean),
+        }));
+        teamRoster[role].active = Math.min(s.active || 0, teamRoster[role].players.length - 1);
+      });
+    }
+  } catch (e) { console.warn('Could not restore saved roster edits:', e); }
+
   syncTeamPlayersFromRoster();
 }
 
@@ -449,14 +480,19 @@ function renderTeamSuggesterUI() {
     const card = el('div', 'player-card');
     const role = teamRoster ? ROLES[idx] : null;
 
-    // Roster mode: role label + one chip per player of this role (click to switch)
+    // Roster mode: role label + one chip per player of this role.
+    // Click = select · double-click = rename · × = remove · + = add player
     const headerLeft = role
       ? `<div class="player-role-head">
            <span class="player-role-label">${roleIcons[role]} ${role[0].toUpperCase()+role.slice(1)}</span>
            <div class="player-chips">
              ${teamRoster[role].players.map((p, k) => `
-               <button class="player-chip ${k === teamRoster[role].active ? 'active' : ''}" data-role="${role}" data-k="${k}">${p.name}</button>
+               <button class="player-chip ${k === teamRoster[role].active ? 'active' : ''}" data-role="${role}" data-k="${k}"
+                       title="Click: select · Double-click: rename">${p.name}${
+                 teamRoster[role].players.length > 1 ? '<span class="chip-x" title="Remove player">×</span>' : ''
+               }</button>
              `).join('')}
+             <button class="player-chip chip-add" data-role="${role}" title="Add player to this role">+</button>
            </div>
          </div>`
       : `<input class="player-name-input" type="text" placeholder="Player ${idx+1}" value="${player.name}" />`;
@@ -474,10 +510,41 @@ function renderTeamSuggesterUI() {
     `;
 
     card.querySelectorAll('.player-chip').forEach(chip => {
-      chip.addEventListener('click', () => {
-        teamRoster[chip.dataset.role].active = Number(chip.dataset.k);
-        syncTeamPlayersFromRoster();
-        renderTeamSuggesterUI();
+      const chipRole = chip.dataset.role;
+      const rerender = () => { saveRoster(); syncTeamPlayersFromRoster(); renderTeamSuggesterUI(); };
+
+      if (chip.classList.contains('chip-add')) {
+        chip.addEventListener('click', () => {
+          const name = prompt('Name of the new player:');
+          if (!name?.trim()) return;
+          teamRoster[chipRole].players.push({ name: name.trim(), champions: [] });
+          teamRoster[chipRole].active = teamRoster[chipRole].players.length - 1;
+          rerender();
+        });
+        return;
+      }
+
+      const k = Number(chip.dataset.k);
+      chip.addEventListener('click', e => {
+        if (e.target.classList.contains('chip-x')) {
+          const p = teamRoster[chipRole].players[k];
+          if (!confirm(`Remove ${p.name} (${chipRole})? Their pool will be deleted.`)) return;
+          const act = teamRoster[chipRole].active;
+          teamRoster[chipRole].players.splice(k, 1);
+          teamRoster[chipRole].active = act > k ? act - 1 : Math.min(act, teamRoster[chipRole].players.length - 1);
+          rerender();
+          return;
+        }
+        teamRoster[chipRole].active = k;
+        rerender();
+      });
+      chip.addEventListener('dblclick', e => {
+        if (e.target.classList.contains('chip-x')) return;
+        const p = teamRoster[chipRole].players[k];
+        const name = prompt('Rename player:', p.name);
+        if (!name?.trim()) return;
+        p.name = name.trim();
+        rerender();
       });
     });
     card.querySelector('.player-name-input')?.addEventListener('change', e => {
@@ -492,6 +559,7 @@ function renderTeamSuggesterUI() {
     });
     card.querySelector('.clear-player-btn').addEventListener('click', () => {
       teamPlayers[idx].champions = [];
+      saveRoster();
       renderPlayerPool(idx);
     });
 
@@ -521,6 +589,7 @@ function renderPlayerPool(idx) {
     `;
     tag.querySelector('.remove-pool-champ').addEventListener('click', () => {
       teamPlayers[idx].champions.splice(ci, 1);
+      saveRoster();
       renderPlayerPool(idx);
     });
     pool.appendChild(tag);
@@ -540,7 +609,43 @@ function addChampToPlayer(idx, raw) {
   }
   if (teamPlayers[idx].champions.some(c => c.id === champ.id)) return;
   teamPlayers[idx].champions.push(champ);
+  saveRoster();
   renderPlayerPool(idx);
+}
+
+// ── ROSTER ACTIONS (reset / export) ───────────────────────────────────────────
+function setupRosterActions() {
+  document.getElementById('reset-roster-btn')?.addEventListener('click', () => {
+    if (!confirm('Reset the team to the built-in defaults? All local edits (players, pools) in this browser will be lost.')) return;
+    localStorage.removeItem(ROSTER_KEY);
+    loadTeamData();
+    renderTeamSuggesterUI();
+    showNotification('Team reset to defaults', 'success');
+  });
+  document.getElementById('export-team-btn')?.addEventListener('click', exportTeamData);
+}
+
+// Downloads the current roster as a ready-to-use team-data.js so edits can be
+// published for everyone (replace the file in the repo and push).
+function exportTeamData() {
+  if (!teamRoster) { showNotification('No team roster loaded', 'error'); return; }
+  let out = `'use strict';\n// ── Team champion pools ── exported from the app on ${new Date().toISOString().slice(0, 10)} ──\n`;
+  out += '// Replace team-data.js in the repo with this file to publish for everyone.\n\nconst TEAM_DATA = [\n';
+  ROLES.forEach(role => {
+    teamRoster[role].players.forEach(p => {
+      const champs = p.champions.map(c => `'${c.id}'`).join(', ');
+      out += `  {\n    name: '${p.name.replace(/'/g, "\\'")}',\n    role: '${role}',\n    rawChamps: [${champs}],\n  },\n`;
+    });
+  });
+  out += '];\n';
+  const blob = new Blob([out], { type: 'text/javascript' });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: 'team-data.js',
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showNotification('team-data.js downloaded ✓', 'success');
 }
 
 // ── COMP PICKER ───────────────────────────────────────────────────────────────
@@ -1122,4 +1227,5 @@ window.addEventListener('DOMContentLoaded', () => {
 // Wire up generate button (may be called before DOMContentLoaded resolves init)
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('generate-btn')?.addEventListener('click', generateSuggestions);
+  setupRosterActions();
 });

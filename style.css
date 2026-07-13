@@ -441,6 +441,18 @@ h1 { font-size: 18px; font-weight: 700; letter-spacing: 1.5px; color: var(--acce
   border-color: var(--accent);
   color: #10141d;
 }
+.player-chip { display: inline-flex; align-items: center; gap: 5px; }
+.chip-x { opacity: .4; font-weight: 700; }
+.player-chip:hover .chip-x { opacity: .8; }
+.chip-x:hover { color: var(--red); opacity: 1 !important; }
+.chip-add { border-style: dashed; padding: 3px 9px; }
+.roster-actions { margin-top: 8px; }
+.roster-hint {
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.5;
+}
 
 .player-pool {
   display: flex;

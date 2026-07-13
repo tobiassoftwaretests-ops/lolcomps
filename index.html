@@ -139,6 +139,11 @@
             Drag &amp; drop your <strong>.xlsx</strong> file here<br/>
             <small>One row per player · Column A = Name · Columns B+ = Champions</small>
           </div>
+          <div class="upload-row roster-actions">
+            <button id="export-team-btn" class="ghost-btn" title="Download the current roster as team-data.js">⬇ Export Team</button>
+            <button id="reset-roster-btn" class="ghost-btn danger-hover" title="Discard local edits and restore the built-in team">↺ Reset Team</button>
+          </div>
+          <div class="roster-hint">Chips: click = select player · double-click = rename · × = remove · + = add.<br/>Edits are saved in <em>this browser</em> — use Export Team to publish them.</div>
         </div>
         <div id="player-cards" class="player-cards"></div>
       </aside>
