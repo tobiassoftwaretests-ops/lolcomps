@@ -47,16 +47,67 @@ function syncTeamPlayersFromRoster() {
 
 // Persist roster edits (players added/removed/renamed, pool changes) per browser
 const ROSTER_KEY = 'lol_team_roster_v1';
-function saveRoster() {
-  if (!teamRoster) return;
-  const data = Object.fromEntries(ROLES.map(r => [r, {
+const TEAM_PASS_KEY = 'lol_team_pass';
+
+function rosterToJSON() {
+  return Object.fromEntries(ROLES.map(r => [r, {
     active: teamRoster[r].active,
     players: teamRoster[r].players.map(p => ({
       name: p.name,
       champs: p.champions.map(c => c.id),
     })),
   }]));
-  localStorage.setItem(ROSTER_KEY, JSON.stringify(data));
+}
+
+function saveRoster() {
+  if (!teamRoster) return;
+  localStorage.setItem(ROSTER_KEY, JSON.stringify(rosterToJSON()));
+}
+
+// ── Cloud sync (Supabase, optional – see sync-config.js) ─────────────────────
+function syncEnabled() {
+  return typeof SYNC !== 'undefined' && !!SYNC.url && !!SYNC.anonKey;
+}
+
+async function loadCloudRoster() {
+  if (!syncEnabled()) return null;
+  try {
+    const res = await fetch(`${SYNC.url}/rest/v1/roster?id=eq.1&select=data`, {
+      headers: { apikey: SYNC.anonKey, Authorization: `Bearer ${SYNC.anonKey}` },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+    const data = rows[0]?.data;
+    return data && Object.keys(data).length ? data : null;
+  } catch (e) {
+    console.warn('Cloud roster unavailable:', e);
+    return null;
+  }
+}
+
+async function publishRoster() {
+  if (!syncEnabled() || !teamRoster) return;
+  const pass = localStorage.getItem(TEAM_PASS_KEY)
+    || prompt('Team password (needed to publish for everyone):');
+  if (!pass) return;
+  try {
+    const res = await fetch(`${SYNC.url}/rest/v1/rpc/save_roster`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SYNC.anonKey,
+        Authorization: `Bearer ${SYNC.anonKey}`,
+      },
+      body: JSON.stringify({ new_data: rosterToJSON(), pass }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    localStorage.setItem(TEAM_PASS_KEY, pass);
+    showNotification('Published — the whole team now sees this roster ✓', 'success');
+  } catch (e) {
+    localStorage.removeItem(TEAM_PASS_KEY);
+    console.error('Publish failed:', e);
+    showNotification('Publish failed — wrong team password?', 'error');
+  }
 }
 
 // Saved comps state
@@ -106,7 +157,7 @@ async function init() {
 
     renderPills();
     renderGrid();
-    loadTeamData();         // pre-load from team-data.js
+    loadTeamData(await loadCloudRoster());  // cloud > local edits > team-data.js
     renderTeamSuggesterUI();
     renderCompPicker();
   } catch (e) {
@@ -432,7 +483,8 @@ function setupControls() {
 }
 
 // ── LOAD HARDCODED TEAM DATA ──────────────────────────────────────────────────
-function loadTeamData() {
+// Priority: published cloud roster > local edits (localStorage) > team-data.js
+function loadTeamData(cloudData = null) {
   if (typeof TEAM_DATA === 'undefined') return;
   teamRoster = Object.fromEntries(ROLES.map(r => [r, { players: [], active: 0 }]));
   TEAM_DATA.forEach(entry => {
@@ -449,23 +501,26 @@ function loadTeamData() {
     slot.players.push(player);
   });
 
-  // Local edits saved in this browser override the built-in defaults
   try {
-    const saved = JSON.parse(localStorage.getItem(ROSTER_KEY) || 'null');
-    if (saved) {
-      ROLES.forEach(role => {
-        const s = saved[role];
-        if (!s || !Array.isArray(s.players) || !s.players.length) return;
-        teamRoster[role].players = s.players.map(p => ({
-          name: String(p.name || '—'),
-          champions: (p.champs || []).map(id => findChamp(id)).filter(Boolean),
-        }));
-        teamRoster[role].active = Math.min(s.active || 0, teamRoster[role].players.length - 1);
-      });
-    }
+    const overlay = cloudData
+      || JSON.parse(localStorage.getItem(ROSTER_KEY) || 'null');
+    applyRosterOverlay(overlay);
   } catch (e) { console.warn('Could not restore saved roster edits:', e); }
 
   syncTeamPlayersFromRoster();
+}
+
+function applyRosterOverlay(saved) {
+  if (!saved) return;
+  ROLES.forEach(role => {
+    const s = saved[role];
+    if (!s || !Array.isArray(s.players) || !s.players.length) return;
+    teamRoster[role].players = s.players.map(p => ({
+      name: String(p.name || '—'),
+      champions: (p.champs || []).map(id => findChamp(id)).filter(Boolean),
+    }));
+    teamRoster[role].active = Math.min(s.active || 0, teamRoster[role].players.length - 1);
+  });
 }
 
 // ── TEAM SUGGESTER UI ─────────────────────────────────────────────────────────
@@ -615,14 +670,20 @@ function addChampToPlayer(idx, raw) {
 
 // ── ROSTER ACTIONS (reset / export) ───────────────────────────────────────────
 function setupRosterActions() {
-  document.getElementById('reset-roster-btn')?.addEventListener('click', () => {
-    if (!confirm('Reset the team to the built-in defaults? All local edits (players, pools) in this browser will be lost.')) return;
+  document.getElementById('reset-roster-btn')?.addEventListener('click', async () => {
+    if (!confirm('Reset the team? Local edits in this browser will be lost and the published roster restored.')) return;
     localStorage.removeItem(ROSTER_KEY);
-    loadTeamData();
+    loadTeamData(await loadCloudRoster());
     renderTeamSuggesterUI();
-    showNotification('Team reset to defaults', 'success');
+    showNotification('Team reset to published state', 'success');
   });
   document.getElementById('export-team-btn')?.addEventListener('click', exportTeamData);
+
+  const publishBtn = document.getElementById('publish-team-btn');
+  if (publishBtn && syncEnabled()) {
+    publishBtn.style.display = '';
+    publishBtn.addEventListener('click', publishRoster);
+  }
 }
 
 // Downloads the current roster as a ready-to-use team-data.js so edits can be
