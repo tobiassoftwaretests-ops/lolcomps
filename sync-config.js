@@ -8,6 +8,6 @@
 // save_roster(), which requires the team password (checked inside the DB).
 // Never put the service_role key here.
 const SYNC = {
-  url: '',      // e.g. 'https://abcdefgh.supabase.co'
-  anonKey: '',  // the "anon public" API key
+  url: 'https://lqsikmisqdktqrtuktoq.supabase.co',
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxxc2lrbWlzcWRrdHFydHVrdG9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM5NjQxMTAsImV4cCI6MjA5OTU0MDExMH0.CPgZcTgg3teF0_KUrQTNSe8DyfcwlNfy91-CzLkJLkI',
 };
