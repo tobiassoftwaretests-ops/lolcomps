@@ -45,10 +45,42 @@ function syncTeamPlayersFromRoster() {
   });
 }
 
-// Persist roster edits (players added/removed/renamed, pool changes) per browser
 const ROSTER_KEY = 'lol_team_roster_v1';
-const TEAM_PASS_KEY = 'lol_team_pass';
+const AUTH_KEY   = 'lol_auth';
 
+// ── Auth state ────────────────────────────────────────────────────────────────
+let auth = null;   // { token, username, role } when logged in
+function loadAuth() { try { auth = JSON.parse(localStorage.getItem(AUTH_KEY) || 'null'); } catch { auth = null; } }
+function isLoggedIn() { return !!auth?.token; }
+function isCoach()    { return auth?.role === 'coach'; }
+
+function syncEnabled() { return typeof SYNC !== 'undefined' && !!SYNC.url && !!SYNC.anonKey; }
+
+// Calls a Supabase RPC with the public anon key; throws with the server message.
+async function rpc(fn, body) {
+  const res = await fetch(`${SYNC.url}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SYNC.anonKey, Authorization: `Bearer ${SYNC.anonKey}` },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text; try { msg = JSON.parse(text).message; } catch {}
+    throw new Error(msg || `HTTP ${res.status}`);
+  }
+  return text ? JSON.parse(text) : null;
+}
+
+function setSyncStatus(state) {
+  const s = document.getElementById('sync-status');
+  if (!s) return;
+  const map = { saving: ['Saving…', 'var(--text-dim)'], saved: ['✓ Synced', 'var(--green)'], error: ['⚠ Save failed', 'var(--red)'] };
+  const [t, c] = map[state] || ['', ''];
+  s.textContent = t; s.style.color = c;
+  if (state === 'saved') setTimeout(() => { if (s.textContent === '✓ Synced') s.textContent = ''; }, 1500);
+}
+
+// ── Roster serialization + save ───────────────────────────────────────────────
 function rosterToJSON() {
   return Object.fromEntries(ROLES.map(r => [r, {
     active: teamRoster[r].active,
@@ -59,60 +91,35 @@ function rosterToJSON() {
   }]));
 }
 
+let rosterSaveTimer = null;
 function saveRoster() {
   if (!teamRoster) return;
-  localStorage.setItem(ROSTER_KEY, JSON.stringify(rosterToJSON()));
-}
-
-// ── Cloud sync (Supabase, optional – see sync-config.js) ─────────────────────
-function syncEnabled() {
-  return typeof SYNC !== 'undefined' && !!SYNC.url && !!SYNC.anonKey;
+  const json = rosterToJSON();
+  localStorage.setItem(ROSTER_KEY, JSON.stringify(json));   // remembered per browser
+  if (!syncEnabled() || !isLoggedIn()) return;              // logged-in users push to the shared cloud roster
+  setSyncStatus('saving');
+  clearTimeout(rosterSaveTimer);
+  rosterSaveTimer = setTimeout(async () => {
+    try { await rpc('save_roster_auth', { new_data: json, token: auth.token }); setSyncStatus('saved'); }
+    catch (e) { console.error('roster save failed', e); setSyncStatus('error'); }
+  }, 700);
 }
 
 async function loadCloudRoster() {
-  if (!syncEnabled()) return null;
+  if (!syncEnabled() || !isLoggedIn()) return null;
   try {
-    const res = await fetch(`${SYNC.url}/rest/v1/roster?id=eq.1&select=data`, {
-      headers: { apikey: SYNC.anonKey, Authorization: `Bearer ${SYNC.anonKey}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const rows = await res.json();
-    const data = rows[0]?.data;
+    const data = await rpc('get_roster', { token: auth.token });
     return data && Object.keys(data).length ? data : null;
-  } catch (e) {
-    console.warn('Cloud roster unavailable:', e);
-    return null;
-  }
+  } catch (e) { console.warn('Cloud roster unavailable:', e); return null; }
 }
 
-async function publishRoster() {
-  if (!syncEnabled() || !teamRoster) return;
-  const pass = localStorage.getItem(TEAM_PASS_KEY)
-    || prompt('Team password (needed to publish for everyone):');
-  if (!pass) return;
-  try {
-    const res = await fetch(`${SYNC.url}/rest/v1/rpc/save_roster`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: SYNC.anonKey,
-        Authorization: `Bearer ${SYNC.anonKey}`,
-      },
-      body: JSON.stringify({ new_data: rosterToJSON(), pass }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    localStorage.setItem(TEAM_PASS_KEY, pass);
-    showNotification('Published — the whole team now sees this roster ✓', 'success');
-  } catch (e) {
-    localStorage.removeItem(TEAM_PASS_KEY);
-    console.error('Publish failed:', e);
-    showNotification('Publish failed — wrong team password?', 'error');
-  }
+// ── Shared saved comps (cloud) ────────────────────────────────────────────────
+let savedComps = [];
+async function loadCloudComps() {
+  if (!syncEnabled() || !isLoggedIn()) { savedComps = []; return; }
+  try { savedComps = (await rpc('get_comps', { token: auth.token })) || []; }
+  catch (e) { console.warn('Cloud comps unavailable:', e); savedComps = []; }
 }
-
-// Saved comps state
-const STORAGE_KEY = 'lol_saved_comps';
-let savedComps = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function init() {
@@ -120,6 +127,8 @@ async function init() {
   setupControls();
   setupPointerDrag();
   setupSaveModal();
+  setupLoginOverlay();
+  setupBuilderModes();
   renderSavedComps();
 
   try {
@@ -157,14 +166,111 @@ async function init() {
 
     renderPills();
     renderGrid();
-    loadTeamData(await loadCloudRoster());  // cloud > local edits > team-data.js
+    loadTeamData();               // defaults + local edits (shown behind the login gate)
     renderTeamSuggesterUI();
     renderCompPicker();
+    await initAuth();             // then log in and pull the shared cloud data
   } catch (e) {
     console.error(e);
     document.getElementById('champion-grid').innerHTML =
       `<div class="loading" style="color:#e74c3c">Failed to load champions — check your internet connection.</div>`;
   }
+}
+
+// ── AUTH FLOW ─────────────────────────────────────────────────────────────────
+async function initAuth() {
+  if (!syncEnabled()) { hideLoginOverlay(); updateAuthUI(); return; }  // sync off → open app
+  loadAuth();
+  if (auth?.token) {
+    try {
+      const info = await rpc('me', { token: auth.token });
+      if (info?.username) {
+        auth = { token: auth.token, username: info.username, role: info.role };
+        localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+        await afterLogin();
+        return;
+      }
+    } catch (e) { /* token no longer valid */ }
+    auth = null; localStorage.removeItem(AUTH_KEY);
+  }
+  showLoginOverlay();
+}
+
+async function afterLogin() {
+  hideLoginOverlay();
+  updateAuthUI();
+  const cloud = await loadCloudRoster();
+  loadTeamData(cloud);
+  renderTeamSuggesterUI();
+  await loadCloudComps();
+  renderSavedComps();
+  if (isCoach()) { await loadCoaching(); renderCoaching(); }
+}
+
+function logout() {
+  auth = null;
+  localStorage.removeItem(AUTH_KEY);
+  location.reload();
+}
+
+// Reflect login state in the UI: header box, coaching tab visibility
+function updateAuthUI() {
+  const box = document.getElementById('auth-box');
+  if (box) {
+    box.innerHTML = isLoggedIn()
+      ? `<span class="auth-user">${auth.username}</span>
+         <span class="auth-role auth-role-${auth.role}">${auth.role === 'coach' ? '★ Coach' : 'Player'}</span>
+         <button id="logout-btn" class="auth-logout" title="Log out">Logout</button>`
+      : '';
+    document.getElementById('logout-btn')?.addEventListener('click', logout);
+  }
+  const coachTab = document.querySelector('.tab-btn[data-tab="tab-coaching"]');
+  if (coachTab) coachTab.style.display = isCoach() ? '' : 'none';
+}
+
+function showLoginOverlay() { document.getElementById('login-overlay')?.classList.remove('hidden'); }
+function hideLoginOverlay() { document.getElementById('login-overlay')?.classList.add('hidden'); }
+
+function setupLoginOverlay() {
+  const form   = document.getElementById('login-form');
+  if (!form) return;
+  const err    = document.getElementById('login-error');
+  const toggle = document.getElementById('login-toggle');
+  const invite = document.getElementById('login-invite-row');
+  const submit = document.getElementById('login-submit');
+  const title  = document.getElementById('login-title');
+  let mode = 'login';   // or 'register'
+
+  toggle.addEventListener('click', e => {
+    e.preventDefault();
+    mode = mode === 'login' ? 'register' : 'login';
+    invite.style.display = mode === 'register' ? '' : 'none';
+    submit.textContent   = mode === 'register' ? 'Create account' : 'Log in';
+    title.textContent    = mode === 'register' ? 'Create your account' : 'Team login';
+    toggle.textContent   = mode === 'register' ? 'I already have an account' : 'Create a new account';
+    err.textContent = '';
+  });
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    err.textContent = '';
+    const u = document.getElementById('login-username').value.trim();
+    const p = document.getElementById('login-password').value;
+    if (!u || !p) { err.textContent = 'Enter username and password.'; return; }
+    submit.disabled = true;
+    try {
+      const info = mode === 'register'
+        ? await rpc('register', { u, p, invite: document.getElementById('login-invite').value.trim() })
+        : await rpc('login', { u, p });
+      auth = { token: info.token, username: info.username, role: info.role };
+      localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+      await afterLogin();
+    } catch (ex) {
+      err.textContent = ex.message || 'Login failed.';
+    } finally {
+      submit.disabled = false;
+    }
+  });
 }
 
 // ── Normalise champion names ───────────────────────────────────────────────────
@@ -184,6 +290,7 @@ function setupTabs() {
       const target = btn.dataset.tab;
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === target));
+      if (target === 'tab-coaching' && isCoach()) renderCoaching();
     });
   });
 }
@@ -614,7 +721,10 @@ function renderTeamSuggesterUI() {
     card.querySelector('.player-name-input')?.addEventListener('change', e => {
       teamPlayers[idx].name = e.target.value;
     });
-    attachChampAutocomplete(card.querySelector('.champ-add-input'), idx);
+    attachChampAutocomplete(card.querySelector('.champ-add-input'), {
+      onPick: champ => addChampToPlayer(idx, champ.id),
+      getOwned: () => teamPlayers[idx].champions.map(c => c.id),
+    });
     card.querySelector('.clear-player-btn').addEventListener('click', () => {
       teamPlayers[idx].champions = [];
       saveRoster();
@@ -689,7 +799,8 @@ function addChampToPlayer(idx, raw) {
 }
 
 // ── Champion autocomplete (simple substring search, prefix matches first) ──────
-function attachChampAutocomplete(input, idx) {
+// opts: { onPick(champ), getOwned() -> [ids] }
+function attachChampAutocomplete(input, opts) {
   const box = el('div', 'champ-suggest hidden');
   input.parentElement.appendChild(box);
   let items = [];   // current [{champ}] shown
@@ -699,7 +810,7 @@ function attachChampAutocomplete(input, idx) {
 
   const pick = champ => {
     if (!champ) return;
-    addChampToPlayer(idx, champ.id);
+    opts.onPick(champ);
     input.value = '';
     hide();
     input.focus();
@@ -709,7 +820,7 @@ function attachChampAutocomplete(input, idx) {
     const q = input.value.trim().toLowerCase();
     if (!q) { hide(); return; }
     const nq = norm(q);
-    const owned = new Set(teamPlayers[idx].champions.map(c => c.id));
+    const owned = new Set(opts.getOwned ? opts.getOwned() : []);
     const rank = c => {
       const n = c.name.toLowerCase();
       if (n.startsWith(q)) return 0;
@@ -744,7 +855,10 @@ function attachChampAutocomplete(input, idx) {
   input.addEventListener('blur', () => setTimeout(hide, 120));
   input.addEventListener('keydown', e => {
     if (box.classList.contains('hidden')) {
-      if (e.key === 'Enter') { addChampToPlayer(idx, input.value); input.value = ''; }
+      if (e.key === 'Enter' && input.value.trim()) {
+        const c = findChamp(input.value);
+        if (c) { opts.onPick(c); input.value = ''; } else showNotification(`"${input.value}" not found`, 'error');
+      }
       return;
     }
     if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % items.length; highlight(); }
@@ -757,19 +871,13 @@ function attachChampAutocomplete(input, idx) {
 // ── ROSTER ACTIONS (reset / export) ───────────────────────────────────────────
 function setupRosterActions() {
   document.getElementById('reset-roster-btn')?.addEventListener('click', async () => {
-    if (!confirm('Reset the team? Local edits in this browser will be lost and the published roster restored.')) return;
+    if (!confirm('Reload the shared team from the cloud? Any unsynced local changes in this browser will be discarded.')) return;
     localStorage.removeItem(ROSTER_KEY);
     loadTeamData(await loadCloudRoster());
     renderTeamSuggesterUI();
-    showNotification('Team reset to published state', 'success');
+    showNotification('Reloaded shared team', 'success');
   });
   document.getElementById('export-team-btn')?.addEventListener('click', exportTeamData);
-
-  const publishBtn = document.getElementById('publish-team-btn');
-  if (publishBtn && syncEnabled()) {
-    publishBtn.style.display = '';
-    publishBtn.addEventListener('click', publishRoster);
-  }
 }
 
 // Downloads the current roster as a ready-to-use team-data.js so edits can be
@@ -1119,9 +1227,12 @@ function hideTooltip() { tooltip.classList.add('hidden'); }
 
 // ── SAVED COMPS ──────────────────────────────────────────────────────────────
 
-function persistSaved() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(savedComps));
+async function persistSaved() {
   updateSavedBadge();
+  if (!syncEnabled() || !isLoggedIn()) return;
+  setSyncStatus('saving');
+  try { await rpc('save_comps', { new_data: savedComps, token: auth.token }); setSyncStatus('saved'); }
+  catch (e) { console.error('comps save failed', e); setSyncStatus('error'); showNotification('Could not sync comps', 'error'); }
 }
 
 function updateSavedBadge() {
@@ -1137,6 +1248,24 @@ function updateSavedBadge() {
   if (total) total.textContent = `${savedComps.length} comp${savedComps.length !== 1 ? 's' : ''}`;
 }
 
+let saveWithPlayers = false;   // set by the "Save for team" flow
+
+function openSaveModal(includePlayers) {
+  const modal     = document.getElementById('save-modal');
+  const nameInput = document.getElementById('save-name-input');
+  const filled = ROLES.map(r => comp[r].main).filter(Boolean);
+  if (!filled.length) { showNotification('Add at least one champion first', 'error'); return; }
+  saveWithPlayers = !!includePlayers;
+  renderModalPreview();
+  const subCounts = {};
+  filled.forEach(c => { subCounts[c.sub] = (subCounts[c.sub] || 0) + 1; });
+  const dominant = Object.entries(subCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Comp';
+  nameInput.value = `${dominant} Comp`;
+  nameInput.select();
+  modal.classList.remove('hidden');
+  setTimeout(() => nameInput.focus(), 50);
+}
+
 function setupSaveModal() {
   const saveBtn    = document.getElementById('save-comp-btn');
   const modal      = document.getElementById('save-modal');
@@ -1144,18 +1273,7 @@ function setupSaveModal() {
   const confirmBtn = document.getElementById('modal-confirm');
   const nameInput  = document.getElementById('save-name-input');
 
-  saveBtn?.addEventListener('click', () => {
-    const filled = ROLES.map(r => comp[r].main).filter(Boolean);
-    if (!filled.length) { showNotification('Add at least one champion first', 'error'); return; }
-    renderModalPreview();
-    const subCounts = {};
-    filled.forEach(c => { subCounts[c.sub] = (subCounts[c.sub] || 0) + 1; });
-    const dominant = Object.entries(subCounts).sort((a,b)=>b[1]-a[1])[0]?.[0] || 'Comp';
-    nameInput.value = `${dominant} Comp`;
-    nameInput.select();
-    modal.classList.remove('hidden');
-    setTimeout(() => nameInput.focus(), 50);
-  });
+  saveBtn?.addEventListener('click', () => openSaveModal(builderMode === 'team'));
 
   cancelBtn?.addEventListener('click', () => modal.classList.add('hidden'));
   modal?.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
@@ -1171,12 +1289,14 @@ function setupSaveModal() {
         backups: comp[role].backups.map(slim),
       };
     });
-    savedComps.unshift({ id: Date.now(), name, notes, slots, date: new Date().toLocaleDateString() });
+    const entry = { id: Date.now(), name, notes, slots, date: new Date().toLocaleDateString() };
+    if (saveWithPlayers) entry.players = { ...teamCompPlayers };
+    savedComps.unshift(entry);
     persistSaved();
     renderSavedComps();
     modal.classList.add('hidden');
     document.getElementById('save-notes-input').value = '';
-    showNotification(`"${name}" saved ✓`, 'success');
+    showNotification(`"${name}" saved for the team ✓`, 'success');
   });
 
   nameInput?.addEventListener('keydown', e => { if (e.key === 'Enter') confirmBtn?.click(); });
@@ -1274,6 +1394,7 @@ function renderSavedComps() {
               ${backups.map(b => `<img src="${b.img}" alt="${b.name}" style="border-color:${b.color}" title="Backup: ${b.name}" />`).join('')}
             </div>` : ''}
             <span class="sc-champ-name">${m?.name ?? '—'}</span>
+            ${saved.players?.[role] ? `<span class="sc-player">${saved.players[role]}</span>` : ''}
           </div>`;
         }).join('')}
       </div>
@@ -1353,6 +1474,112 @@ function addSaveToSuggestion(card, res, template) {
     showNotification(`"${name}" saved ✓`, 'success');
   });
   card.querySelector('.sug-header')?.appendChild(btn);
+}
+
+// ── COACHING PROFILES (coach-only) ────────────────────────────────────────────
+let coachingData = {};
+let coachingSaveTimer = null;
+
+async function loadCoaching() {
+  try { coachingData = (await rpc('get_coaching', { token: auth.token })) || {}; }
+  catch (e) { console.warn('coaching load failed', e); coachingData = {}; }
+}
+function saveCoaching() {
+  if (!isCoach()) return;
+  setSyncStatus('saving');
+  clearTimeout(coachingSaveTimer);
+  coachingSaveTimer = setTimeout(async () => {
+    try { await rpc('save_coaching', { new_data: coachingData, token: auth.token }); setSyncStatus('saved'); }
+    catch (e) { console.error('coaching save failed', e); setSyncStatus('error'); }
+  }, 700);
+}
+
+const ROLE_ICONS = { top: '🗡', jungle: '🌲', mid: '🔮', bot: '🏹', support: '🛡' };
+
+function renderCoaching() {
+  const cont = document.getElementById('coaching-cards');
+  if (!cont || !teamRoster) return;
+  cont.innerHTML = '';
+
+  ROLES.forEach(role => {
+    teamRoster[role].players.forEach(p => {
+      const key  = `${role}|${p.name}`;
+      const prof = coachingData[key] || (coachingData[key] = { notes: '', ratings: {} });
+      const card = el('div', 'coach-card');
+      card.innerHTML = `
+        <div class="coach-card-head">
+          <span class="coach-role">${ROLE_ICONS[role]} ${role[0].toUpperCase()+role.slice(1)}</span>
+          <span class="coach-name">${p.name}</span>
+        </div>
+        <textarea class="coach-notes" placeholder="Coaching notes for ${p.name} — focus areas, matchups, goals…"></textarea>
+        <div class="coach-ratings-label">Champion ratings <span>(1–10)</span></div>
+        <div class="coach-ratings"></div>
+        <div class="coach-add-area"><input class="champ-add-input coach-add-input" type="text" placeholder="Add champion to rate…" /></div>
+      `;
+      const ta = card.querySelector('.coach-notes');
+      ta.value = prof.notes || '';
+      ta.addEventListener('input', () => { prof.notes = ta.value; saveCoaching(); });
+
+      const rlist = card.querySelector('.coach-ratings');
+      const renderRatings = () => {
+        rlist.innerHTML = '';
+        const ids = Object.keys(prof.ratings);
+        if (!ids.length) { rlist.innerHTML = '<span class="pool-empty">No champions rated yet</span>'; return; }
+        ids.forEach(id => {
+          const champ = findChamp(id); if (!champ) return;
+          const row = el('div', 'coach-rating-row');
+          row.innerHTML = `
+            <img src="${champ.img}" alt="" />
+            <span class="cr-name" style="color:${champ.color}">${champ.name}</span>
+            <select class="cr-score">${[1,2,3,4,5,6,7,8,9,10].map(n => `<option value="${n}" ${n === prof.ratings[id] ? 'selected' : ''}>${n}</option>`).join('')}</select>
+            <button class="cr-del" title="Remove">×</button>
+          `;
+          row.querySelector('.cr-score').addEventListener('change', e => { prof.ratings[id] = Number(e.target.value); saveCoaching(); });
+          row.querySelector('.cr-del').addEventListener('click', () => { delete prof.ratings[id]; saveCoaching(); renderRatings(); });
+          rlist.appendChild(row);
+        });
+      };
+      renderRatings();
+
+      attachChampAutocomplete(card.querySelector('.coach-add-input'), {
+        onPick: champ => { if (!prof.ratings[champ.id]) prof.ratings[champ.id] = 5; saveCoaching(); renderRatings(); },
+        getOwned: () => Object.keys(prof.ratings),
+      });
+      cont.appendChild(card);
+    });
+  });
+}
+
+// ── MANUAL BUILDER MODES (solo / team comp) ───────────────────────────────────
+let builderMode = 'solo';
+let teamCompPlayers = {};   // role → chosen player name (team-comp mode)
+
+function setupBuilderModes() {
+  document.querySelectorAll('.builder-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => setBuilderMode(btn.dataset.mode));
+  });
+}
+function setBuilderMode(mode) {
+  builderMode = mode;
+  document.querySelectorAll('.builder-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  const bar = document.getElementById('team-comp-bar');
+  if (bar) bar.style.display = mode === 'team' ? '' : 'none';
+  if (mode === 'team') renderTeamCompBar();
+}
+function renderTeamCompBar() {
+  const bar = document.getElementById('team-comp-bar');
+  if (!bar || !teamRoster) return;
+  bar.innerHTML = `<span class="tcb-label">Who plays this comp?</span>` + ROLES.map(role => {
+    const players = teamRoster[role].players;
+    if (!teamCompPlayers[role] || !players.some(p => p.name === teamCompPlayers[role]))
+      teamCompPlayers[role] = players[teamRoster[role].active]?.name || players[0]?.name || '';
+    return `<label class="tcb-role">${ROLE_ICONS[role]}
+      <select data-role="${role}">${players.map(p => `<option ${p.name === teamCompPlayers[role] ? 'selected' : ''}>${p.name}</option>`).join('')}</select>
+    </label>`;
+  }).join('') + `<button id="save-team-comp-btn" class="save-btn">💾 Save for team</button>`;
+  bar.querySelectorAll('select').forEach(sel =>
+    sel.addEventListener('change', () => { teamCompPlayers[sel.dataset.role] = sel.value; }));
+  bar.querySelector('#save-team-comp-btn').addEventListener('click', () => openSaveModal(true));
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────

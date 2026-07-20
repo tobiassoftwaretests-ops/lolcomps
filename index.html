@@ -22,11 +22,21 @@
         Saved Comps
         <span class="saved-count-badge" id="saved-count-badge" style="display:none"></span>
       </button>
+      <button class="tab-btn" data-tab="tab-coaching" style="display:none">Coaching</button>
     </nav>
+    <div class="auth-box" id="auth-box"></div>
   </header>
 
   <!-- ══════════════ TAB 1 – MANUAL BUILDER ══════════════ -->
   <div id="tab-builder" class="tab-panel active">
+
+    <!-- Mode toggle: freeform vs. team comp -->
+    <div class="builder-modes">
+      <button class="builder-mode-btn active" data-mode="solo">✎ Freeform</button>
+      <button class="builder-mode-btn" data-mode="team">👥 Team Comp</button>
+      <span class="builder-mode-hint">Team Comp: pick who plays each role, then save the comp for the whole team.</span>
+    </div>
+    <div id="team-comp-bar" class="team-comp-bar" style="display:none"></div>
 
     <!-- Comp slots -->
     <section class="comp-section">
@@ -140,11 +150,11 @@
             <small>One row per player · Column A = Name · Columns B+ = Champions</small>
           </div>
           <div class="upload-row roster-actions">
-            <button id="publish-team-btn" class="accent-btn" style="display:none" title="Save the current roster for the whole team (needs the team password)">☁ Publish Team</button>
-            <button id="export-team-btn" class="ghost-btn" title="Download the current roster as team-data.js">⬇ Export Team</button>
-            <button id="reset-roster-btn" class="ghost-btn danger-hover" title="Discard local edits and restore the published team">↺ Reset Team</button>
+            <span id="sync-status" class="sync-status"></span>
+            <button id="export-team-btn" class="ghost-btn" title="Download the current roster as team-data.js">⬇ Export</button>
+            <button id="reset-roster-btn" class="ghost-btn danger-hover" title="Reload the shared team from the cloud">↺ Reload</button>
           </div>
-          <div class="roster-hint">Chips: click = select player · double-click = rename · × = remove · + = add.<br/>Edits stay in <em>this browser</em> until you hit <strong>Publish Team</strong> (team password required).</div>
+          <div class="roster-hint">Chips: click = select player · double-click = rename · × = remove · + = add.<br/>Changes <strong>save automatically for the whole team</strong> while you're logged in.</div>
         </div>
         <div id="player-cards" class="player-cards"></div>
       </aside>
@@ -192,6 +202,31 @@
     </div>
   </div>
 
+  <!-- ══════════════ TAB 4 – COACHING (coach only) ══════════════ -->
+  <div id="tab-coaching" class="tab-panel">
+    <div class="coaching-header">
+      <h2>Coaching Profiles</h2>
+      <span class="coaching-sub">Only coaches see this page. Notes &amp; champion ratings sync for all coaches.</span>
+    </div>
+    <div id="coaching-cards" class="coaching-cards"></div>
+  </div>
+
+</div>
+
+<!-- LOGIN OVERLAY -->
+<div id="login-overlay" class="login-overlay hidden">
+  <form id="login-form" class="login-card" autocomplete="off">
+    <div class="login-logo">⚔</div>
+    <h2 id="login-title">Team login</h2>
+    <input id="login-username" class="login-input" type="text" placeholder="Username" autocomplete="username" />
+    <input id="login-password" class="login-input" type="password" placeholder="Password" autocomplete="current-password" />
+    <div id="login-invite-row" class="login-invite-row" style="display:none">
+      <input id="login-invite" class="login-input" type="text" placeholder="Team invite code" />
+    </div>
+    <div id="login-error" class="login-error"></div>
+    <button id="login-submit" type="submit" class="login-submit">Log in</button>
+    <a href="#" id="login-toggle" class="login-toggle">Create a new account</a>
+  </form>
 </div>
 
 <!-- SAVE MODAL -->
