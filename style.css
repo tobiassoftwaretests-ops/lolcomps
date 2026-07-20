@@ -483,7 +483,41 @@ h1 { font-size: 18px; font-weight: 700; letter-spacing: 1.5px; color: var(--acce
 }
 .remove-pool-champ:hover { color: var(--red); }
 
-.player-add-area { display: flex; gap: 6px; align-items: center; }
+/* Mastery pips – click to rate how well the player plays the champ */
+.mastery-pips { display: inline-flex; gap: 2px; align-items: center; padding: 0 1px; }
+.pip {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--text-dim);
+  cursor: pointer;
+  transition: all .12s;
+}
+.pip:hover { border-color: var(--accent); transform: scale(1.2); }
+.pip.on { background: var(--accent); border-color: var(--accent); }
+
+.player-add-area { display: flex; gap: 6px; align-items: center; position: relative; }
+
+/* Champion autocomplete dropdown */
+.champ-suggest {
+  position: absolute;
+  top: calc(100% + 3px); left: 0; right: 34px;
+  z-index: 60;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  overflow: hidden;
+  max-height: 260px; overflow-y: auto;
+}
+.champ-suggest.hidden { display: none; }
+.champ-suggest-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 8px; cursor: pointer;
+}
+.champ-suggest-item img { width: 20px; height: 20px; border-radius: 3px; object-fit: cover; object-position: top; }
+.champ-suggest-item .cs-name { font-size: 12px; font-weight: 600; color: var(--text); flex: 1; }
+.champ-suggest-item .cs-sub { font-size: 10px; font-weight: 600; }
+.champ-suggest-item.active, .champ-suggest-item:hover { background: var(--card2); }
 
 .champ-add-input {
   flex: 1;

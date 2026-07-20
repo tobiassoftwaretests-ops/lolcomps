@@ -54,7 +54,7 @@ function rosterToJSON() {
     active: teamRoster[r].active,
     players: teamRoster[r].players.map(p => ({
       name: p.name,
-      champs: p.champions.map(c => c.id),
+      champs: p.champions.map(c => ({ id: c.id, m: (p.mastery && p.mastery[c.id]) || 3 })),
     })),
   }]));
 }
@@ -490,7 +490,7 @@ function loadTeamData(cloudData = null) {
   TEAM_DATA.forEach(entry => {
     const slot = teamRoster[entry.role];
     if (!slot) { console.warn('Team data: unknown role:', entry.role); return; }
-    const player = { name: entry.name, champions: [] };
+    const player = { name: entry.name, champions: [], mastery: {} };
     entry.rawChamps.forEach(raw => {
       const champ = findChamp(raw);
       if (champ && !player.champions.some(c => c.id === champ.id))
@@ -515,10 +515,19 @@ function applyRosterOverlay(saved) {
   ROLES.forEach(role => {
     const s = saved[role];
     if (!s || !Array.isArray(s.players) || !s.players.length) return;
-    teamRoster[role].players = s.players.map(p => ({
-      name: String(p.name || '—'),
-      champions: (p.champs || []).map(id => findChamp(id)).filter(Boolean),
-    }));
+    teamRoster[role].players = s.players.map(p => {
+      // Champs are stored as plain ids (legacy) or { id, m } with a mastery rating
+      const champions = [];
+      const mastery = {};
+      (p.champs || []).forEach(entry => {
+        const id = typeof entry === 'string' ? entry : entry?.id;
+        const champ = findChamp(id);
+        if (!champ || champions.some(c => c.id === champ.id)) return;
+        champions.push(champ);
+        if (entry && typeof entry === 'object' && entry.m) mastery[champ.id] = entry.m;
+      });
+      return { name: String(p.name || '—'), champions, mastery };
+    });
     teamRoster[role].active = Math.min(s.active || 0, teamRoster[role].players.length - 1);
   });
 }
@@ -605,13 +614,7 @@ function renderTeamSuggesterUI() {
     card.querySelector('.player-name-input')?.addEventListener('change', e => {
       teamPlayers[idx].name = e.target.value;
     });
-    card.querySelector('.champ-add-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
-        const input = e.currentTarget;
-        addChampToPlayer(idx, input.value);
-        input.value = '';
-      }
-    });
+    attachChampAutocomplete(card.querySelector('.champ-add-input'), idx);
     card.querySelector('.clear-player-btn').addEventListener('click', () => {
       teamPlayers[idx].champions = [];
       saveRoster();
@@ -633,17 +636,32 @@ function renderPlayerPool(idx) {
   const countEl = pool.closest('.player-card')?.querySelector('.player-champ-count');
   if (countEl) countEl.textContent = `${player.champions.length} champs`;
 
+  player.mastery = player.mastery || {};
+  const masteryTitles = { 1: 'learning', 2: 'solid', 3: 'main / comfort pick' };
+
   player.champions.forEach((champ, ci) => {
+    const m = player.mastery[champ.id] || 3;
     const tag = el('div', 'pool-champ-tag');
     tag.style.borderColor = champ.color;
     tag.style.background  = champ.bg;
     tag.innerHTML = `
       <img src="${champ.img}" alt="${champ.name}" />
-      <span style="color:${champ.color}">${champ.name}</span>
+      <span class="pool-champ-name" style="color:${champ.color}">${champ.name}</span>
+      <span class="mastery-pips" title="Mastery: ${masteryTitles[m]} — click to rate how well ${player.name} plays ${champ.name}">
+        ${[1, 2, 3].map(n => `<span class="pip ${n <= m ? 'on' : ''}" data-m="${n}"></span>`).join('')}
+      </span>
       <button class="remove-pool-champ" data-idx="${idx}" data-ci="${ci}">×</button>
     `;
+    tag.querySelectorAll('.pip').forEach(pip => {
+      pip.addEventListener('click', () => {
+        player.mastery[champ.id] = Number(pip.dataset.m);
+        saveRoster();
+        renderPlayerPool(idx);
+      });
+    });
     tag.querySelector('.remove-pool-champ').addEventListener('click', () => {
       teamPlayers[idx].champions.splice(ci, 1);
+      delete player.mastery[champ.id];
       saveRoster();
       renderPlayerPool(idx);
     });
@@ -662,10 +680,78 @@ function addChampToPlayer(idx, raw) {
     showNotification(`"${raw}" not found`, 'error');
     return;
   }
-  if (teamPlayers[idx].champions.some(c => c.id === champ.id)) return;
-  teamPlayers[idx].champions.push(champ);
+  const player = teamPlayers[idx];
+  player.mastery = player.mastery || {};
+  if (player.champions.some(c => c.id === champ.id)) return;
+  player.champions.push(champ);
   saveRoster();
   renderPlayerPool(idx);
+}
+
+// ── Champion autocomplete (simple substring search, prefix matches first) ──────
+function attachChampAutocomplete(input, idx) {
+  const box = el('div', 'champ-suggest hidden');
+  input.parentElement.appendChild(box);
+  let items = [];   // current [{champ}] shown
+  let active = -1;   // highlighted index
+
+  const hide = () => { box.classList.add('hidden'); active = -1; };
+
+  const pick = champ => {
+    if (!champ) return;
+    addChampToPlayer(idx, champ.id);
+    input.value = '';
+    hide();
+    input.focus();
+  };
+
+  const build = () => {
+    const q = input.value.trim().toLowerCase();
+    if (!q) { hide(); return; }
+    const nq = norm(q);
+    const owned = new Set(teamPlayers[idx].champions.map(c => c.id));
+    const rank = c => {
+      const n = c.name.toLowerCase();
+      if (n.startsWith(q)) return 0;
+      if (n.split(/[\s']/).some(w => w.startsWith(q))) return 1;
+      return 2;
+    };
+    items = allChamps
+      .filter(c => !owned.has(c.id) &&
+        (c.name.toLowerCase().includes(q) || norm(c.name).includes(nq) || c.id.toLowerCase().includes(q)))
+      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+      .slice(0, 8);
+
+    if (!items.length) { hide(); return; }
+    active = 0;
+    box.innerHTML = items.map((c, i) => `
+      <div class="champ-suggest-item ${i === 0 ? 'active' : ''}" data-i="${i}">
+        <img src="${c.img}" alt="" />
+        <span class="cs-name">${c.name}</span>
+        <span class="cs-sub" style="color:${c.color}">${c.sub}</span>
+      </div>`).join('');
+    box.classList.remove('hidden');
+    box.querySelectorAll('.champ-suggest-item').forEach(row => {
+      row.addEventListener('mousedown', e => { e.preventDefault(); pick(items[Number(row.dataset.i)]); });
+    });
+  };
+
+  const highlight = () => box.querySelectorAll('.champ-suggest-item')
+    .forEach((row, i) => row.classList.toggle('active', i === active));
+
+  input.addEventListener('input', build);
+  input.addEventListener('focus', () => { if (input.value.trim()) build(); });
+  input.addEventListener('blur', () => setTimeout(hide, 120));
+  input.addEventListener('keydown', e => {
+    if (box.classList.contains('hidden')) {
+      if (e.key === 'Enter') { addChampToPlayer(idx, input.value); input.value = ''; }
+      return;
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % items.length; highlight(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = (active - 1 + items.length) % items.length; highlight(); }
+    else if (e.key === 'Enter') { e.preventDefault(); pick(items[active]); }
+    else if (e.key === 'Escape') { hide(); }
+  });
 }
 
 // ── ROSTER ACTIONS (reset / export) ───────────────────────────────────────────
@@ -881,6 +967,9 @@ function generateSuggestions() {
 
 // Max points a single slot can contribute (used for % match display)
 const SLOT_MAX = 15;
+// How much a player's mastery of a champion scales its comp-fit score.
+// Default (unrated) is 3 = full score, so ratings only ever pull a pick DOWN.
+const MASTERY_FACTOR = { 1: 0.55, 2: 0.8, 3: 1 };
 
 function bestForRole(player, template, role) {
   return scoredForRole(player, template, role)[0] || { champ: null, score: 0 };
@@ -906,6 +995,8 @@ function scoredForRole(player, template, role) {
         score += core * 7 + good * 2 - bad * 5;
       }
       score = Math.min(SLOT_MAX, Math.max(0, score));
+      const m = (player.mastery && player.mastery[champ.id]) || 3;
+      score = Math.round(score * MASTERY_FACTOR[m]);
       return score > 0 ? { champ, score } : null;
     })
     .filter(Boolean)
