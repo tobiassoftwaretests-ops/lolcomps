@@ -129,6 +129,7 @@ async function init() {
   setupSaveModal();
   setupLoginOverlay();
   setupBuilderModes();
+  setupCalendar();
   renderSavedComps();
 
   try {
@@ -226,6 +227,8 @@ function updateAuthUI() {
   }
   const coachTab = document.querySelector('.tab-btn[data-tab="tab-coaching"]');
   if (coachTab) coachTab.style.display = isCoach() ? '' : 'none';
+  const calTab = document.querySelector('.tab-btn[data-tab="tab-calendar"]');
+  if (calTab) calTab.style.display = isLoggedIn() && syncEnabled() ? '' : 'none';
 }
 
 function showLoginOverlay() { document.getElementById('login-overlay')?.classList.remove('hidden'); }
@@ -291,6 +294,7 @@ function setupTabs() {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === target));
       if (target === 'tab-coaching' && isCoach()) renderCoaching();
+      if (target === 'tab-calendar' && isLoggedIn()) refreshCalendar();
     });
   });
 }
@@ -1580,6 +1584,283 @@ function renderTeamCompBar() {
   bar.querySelectorAll('select').forEach(sel =>
     sel.addEventListener('change', () => { teamCompPlayers[sel.dataset.role] = sel.value; }));
   bar.querySelector('#save-team-comp-btn').addEventListener('click', () => openSaveModal(true));
+}
+
+// ── COACHING CALENDAR (Schedule tab) ──────────────────────────────────────────
+// Every coach has their own week calendar. Players click a free slot to request
+// a session; the coach confirms/declines and can block slots on their own
+// calendar. Data lives in Supabase (see supabase-calendar.sql).
+const CAL_START_HOUR = 12;   // first bookable hour of the day
+const CAL_END_HOUR   = 23;   // grid ends here (last slot starts one hour before)
+
+let calCoaches    = [];      // coach usernames
+let calBookings   = [];      // bookings for all coaches
+let calCoach      = null;    // currently shown coach calendar
+let calWeekOffset = 0;       // weeks relative to the current one
+let bookingDraft  = null;    // { coach, start: Date } while the modal is open
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, ch =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+async function loadCalendarData() {
+  const [coaches, bookings] = await Promise.all([
+    rpc('get_coaches',  { token: auth.token }),
+    rpc('get_bookings', { token: auth.token }),
+  ]);
+  calCoaches  = coaches  || [];
+  calBookings = bookings || [];
+  if (!calCoach || !calCoaches.includes(calCoach))
+    calCoach = (isCoach() && calCoaches.includes(auth.username)) ? auth.username : (calCoaches[0] || null);
+}
+
+async function refreshCalendar() {
+  try { await loadCalendarData(); }
+  catch (e) {
+    console.warn('calendar unavailable:', e);
+    const grid = document.getElementById('cal-grid');
+    if (grid) grid.innerHTML =
+      '<div class="no-suggestions">Calendar is not set up yet — a coach needs to run <strong>supabase-calendar.sql</strong> in the Supabase SQL editor once.</div>';
+    return;
+  }
+  renderCalendar();
+}
+
+// Monday 00:00 of the shown week
+function calWeekStart() {
+  const d = new Date();
+  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7) + calWeekOffset * 7);
+  return monday;
+}
+
+function viewingOwnCalendar() { return isCoach() && calCoach === auth.username; }
+
+function renderCalendar() {
+  renderCalCoaches();
+  renderCalGrid();
+  renderCalRequests();
+}
+
+function renderCalCoaches() {
+  const cont = document.getElementById('cal-coaches');
+  if (!cont) return;
+  cont.innerHTML = calCoaches.map(c => `
+    <button class="player-chip cal-coach-chip ${c === calCoach ? 'active' : ''}" data-coach="${esc(c)}">
+      ★ ${esc(c)}${c === auth.username ? ' (you)' : ''}
+    </button>`).join('') || '<span class="pool-empty">No coach accounts yet</span>';
+  cont.querySelectorAll('.cal-coach-chip').forEach(chip =>
+    chip.addEventListener('click', () => { calCoach = chip.dataset.coach; renderCalendar(); }));
+
+  const hint = document.getElementById('cal-hint');
+  if (hint) hint.textContent = !calCoach ? ''
+    : viewingOwnCalendar()
+      ? 'Your calendar — click an empty slot to block it, use ✓ / ✕ on a request to confirm or decline.'
+      : `Click an empty slot to request a coaching session with ${calCoach}.`;
+}
+
+function renderCalGrid() {
+  const grid = document.getElementById('cal-grid');
+  if (!grid) return;
+  const start = calWeekStart();
+  const days  = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start); d.setDate(d.getDate() + i); return d;
+  });
+
+  const fmtD  = d => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const label = document.getElementById('cal-week-label');
+  if (label) label.textContent = `${fmtD(days[0])} – ${fmtD(days[6])} ${days[6].getFullYear()}`;
+
+  // Which grid cell is covered by which booking ("dayIndex|hour" → {b, isStart})
+  const cells = {};
+  calBookings
+    .filter(b => b.coach === calCoach && b.status !== 'declined')
+    .forEach(b => {
+      const s = new Date(b.starts_at);
+      const span = Math.max(1, Math.ceil(b.minutes / 60));
+      for (let h = 0; h < span; h++) {
+        const t  = new Date(s.getTime() + h * 3600e3);
+        const di = days.findIndex(d => d.toDateString() === t.toDateString());
+        if (di !== -1) cells[`${di}|${t.getHours()}`] = { b, isStart: h === 0 };
+      }
+    });
+
+  const now   = new Date();
+  const fmtT  = d => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  let html = `<div class="cal-cell cal-corner"></div>` + days.map(d => `
+    <div class="cal-cell cal-day-head ${d.toDateString() === now.toDateString() ? 'cal-today-col' : ''}">
+      ${d.toLocaleDateString(undefined, { weekday: 'short' })} <span>${d.getDate()}</span>
+    </div>`).join('');
+
+  for (let hour = CAL_START_HOUR; hour < CAL_END_HOUR; hour++) {
+    html += `<div class="cal-cell cal-hour">${String(hour).padStart(2, '0')}:00</div>`;
+    days.forEach((d, di) => {
+      const cell = cells[`${di}|${hour}`];
+      const slotStart = new Date(d); slotStart.setHours(hour, 0, 0, 0);
+      if (!cell) {
+        const past = slotStart < now;
+        html += `<div class="cal-cell cal-slot ${past ? 'cal-past' : 'cal-free'}" data-di="${di}" data-hour="${hour}"></div>`;
+      } else if (!cell.isStart) {
+        html += `<div class="cal-cell cal-slot cal-cont cal-${cell.b.status}"></div>`;
+      } else {
+        const b    = cell.b;
+        const mine = b.player === auth.username && b.status !== 'blocked';
+        const own  = viewingOwnCalendar();
+        const end  = new Date(new Date(b.starts_at).getTime() + b.minutes * 60000);
+        html += `<div class="cal-cell cal-slot cal-entry cal-${b.status}" data-id="${b.id}" title="${esc(b.topic)}">
+          <span class="cal-entry-time">${fmtT(new Date(b.starts_at))}–${fmtT(end)}</span>
+          <span class="cal-entry-name">${b.status === 'blocked' ? '⛔ blocked' : esc(b.player)}</span>
+          ${b.topic && b.status !== 'blocked' ? `<span class="cal-entry-topic">${esc(b.topic)}</span>` : ''}
+          <span class="cal-entry-actions">
+            ${own && b.status === 'requested'
+              ? `<button class="cal-act cal-ok" data-act="confirm" title="Confirm">✓</button>
+                 <button class="cal-act cal-no" data-act="decline" title="Decline">✕</button>` : ''}
+            ${own || mine
+              ? `<button class="cal-act" data-act="delete" title="${mine && !own ? 'Cancel my request' : 'Remove'}">×</button>` : ''}
+          </span>
+        </div>`;
+      }
+    });
+  }
+  grid.innerHTML = html;
+
+  grid.querySelectorAll('.cal-free').forEach(cellEl =>
+    cellEl.addEventListener('click', () => {
+      const d = new Date(days[Number(cellEl.dataset.di)]);
+      d.setHours(Number(cellEl.dataset.hour), 0, 0, 0);
+      onFreeSlotClick(d);
+    }));
+  grid.querySelectorAll('.cal-act').forEach(btn =>
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      onBookingAction(btn.closest('.cal-entry').dataset.id, btn.dataset.act);
+    }));
+}
+
+function renderCalRequests() {
+  const title = document.getElementById('cal-requests-title');
+  const list  = document.getElementById('cal-requests-list');
+  if (!title || !list) return;
+  const now = Date.now();
+  const fmt = b => {
+    const d = new Date(b.starts_at);
+    return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+      + ' · ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+  const bySoonest = (a, b) => new Date(a.starts_at) - new Date(b.starts_at);
+
+  if (isCoach()) {
+    title.textContent = 'Open requests for you';
+    const rows = calBookings
+      .filter(b => b.coach === auth.username && b.status === 'requested' && new Date(b.starts_at).getTime() > now)
+      .sort(bySoonest);
+    list.innerHTML = rows.length ? rows.map(b => `
+      <div class="cal-req-row">
+        <span class="cal-req-when">${fmt(b)}</span>
+        <span class="cal-req-who">${esc(b.player)}</span>
+        <span class="cal-req-topic">${esc(b.topic)}</span>
+        <span class="cal-req-actions">
+          <button class="cal-act cal-ok" data-id="${b.id}" data-act="confirm">✓ Confirm</button>
+          <button class="cal-act cal-no" data-id="${b.id}" data-act="decline">✕ Decline</button>
+        </span>
+      </div>`).join('') : '<div class="pool-empty">No open requests.</div>';
+  } else {
+    title.textContent = 'My requests';
+    const rows = calBookings
+      .filter(b => b.player === auth.username && new Date(b.starts_at).getTime() > now)
+      .sort(bySoonest);
+    list.innerHTML = rows.length ? rows.map(b => `
+      <div class="cal-req-row">
+        <span class="cal-req-when">${fmt(b)}</span>
+        <span class="cal-req-who">★ ${esc(b.coach)}</span>
+        <span class="cal-req-topic">${esc(b.topic)}</span>
+        <span class="cal-status cal-status-${b.status}">${b.status}</span>
+        <span class="cal-req-actions"><button class="cal-act" data-id="${b.id}" data-act="delete">× Cancel</button></span>
+      </div>`).join('') : '<div class="pool-empty">No requests yet — click a free slot in the calendar above.</div>';
+  }
+  list.querySelectorAll('.cal-act').forEach(btn =>
+    btn.addEventListener('click', () => onBookingAction(btn.dataset.id, btn.dataset.act)));
+}
+
+function onFreeSlotClick(startDate) {
+  if (!calCoach) return;
+  if (viewingOwnCalendar()) {
+    const note = prompt('Block this slot (players cannot book it). Optional note:', '');
+    if (note === null) return;
+    calAction('block_slot',
+      { starts_at: startDate.toISOString(), minutes: 60, note: note.trim() }, 'Slot blocked');
+    return;
+  }
+  bookingDraft = { coach: calCoach, start: startDate };
+  document.getElementById('booking-when').textContent =
+    `★ ${calCoach} · ` +
+    startDate.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }) +
+    ' · ' + startDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  document.getElementById('booking-topic').value = '';
+  document.getElementById('booking-minutes').value = '60';
+  document.getElementById('booking-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('booking-topic')?.focus(), 50);
+}
+
+function onBookingAction(id, act) {
+  const b = calBookings.find(x => x.id === id);
+  if (act === 'delete') {
+    const msg = b?.status === 'blocked' ? 'Unblock this slot?'
+      : (b?.player === auth.username && b?.coach !== auth.username) ? 'Cancel this coaching request?'
+      : 'Remove this entry?';
+    if (!confirm(msg)) return;
+    calAction('delete_booking', { booking: id }, 'Removed');
+  } else {
+    calAction('set_booking_status',
+      { booking: id, new_status: act === 'confirm' ? 'confirmed' : 'declined' },
+      act === 'confirm' ? 'Session confirmed ✓' : 'Request declined');
+  }
+}
+
+async function calAction(fn, body, okMsg) {
+  try {
+    await rpc(fn, { ...body, token: auth.token });
+    if (okMsg) showNotification(okMsg, 'success');
+    await loadCalendarData();
+    renderCalendar();
+  } catch (e) {
+    showNotification(e.message || 'Action failed', 'error');
+  }
+}
+
+function setupCalendar() {
+  document.getElementById('cal-prev')?.addEventListener('click',  () => { calWeekOffset--;   renderCalGrid(); });
+  document.getElementById('cal-next')?.addEventListener('click',  () => { calWeekOffset++;   renderCalGrid(); });
+  document.getElementById('cal-today')?.addEventListener('click', () => { calWeekOffset = 0; renderCalGrid(); });
+
+  const modal = document.getElementById('booking-modal');
+  const close = () => { modal?.classList.add('hidden'); bookingDraft = null; };
+  document.getElementById('booking-cancel')?.addEventListener('click', close);
+  modal?.addEventListener('click', e => { if (e.target === modal) close(); });
+
+  document.getElementById('booking-confirm')?.addEventListener('click', async () => {
+    if (!bookingDraft) return;
+    const btn = document.getElementById('booking-confirm');
+    btn.disabled = true;
+    try {
+      await rpc('request_booking', {
+        token:     auth.token,
+        coach:     bookingDraft.coach,
+        starts_at: bookingDraft.start.toISOString(),
+        minutes:   Number(document.getElementById('booking-minutes').value),
+        topic:     document.getElementById('booking-topic').value.trim(),
+      });
+      close();
+      showNotification('Coaching request sent ✓', 'success');
+      await loadCalendarData();
+      renderCalendar();
+    } catch (e) {
+      showNotification(e.message || 'Request failed', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────

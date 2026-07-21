@@ -23,6 +23,7 @@
         <span class="saved-count-badge" id="saved-count-badge" style="display:none"></span>
       </button>
       <button class="tab-btn" data-tab="tab-coaching" style="display:none">Coaching</button>
+      <button class="tab-btn" data-tab="tab-calendar" style="display:none">📅 Schedule</button>
     </nav>
     <div class="auth-box" id="auth-box"></div>
   </header>
@@ -211,6 +212,32 @@
     <div id="coaching-cards" class="coaching-cards"></div>
   </div>
 
+  <!-- ══════════════ TAB 5 – SCHEDULE (coaching calendar) ══════════════ -->
+  <div id="tab-calendar" class="tab-panel">
+    <div class="cal-header">
+      <div class="cal-coaches" id="cal-coaches"></div>
+      <div class="cal-week-nav">
+        <button id="cal-prev"  class="ghost-btn" title="Previous week">‹</button>
+        <span id="cal-week-label" class="cal-week-label"></span>
+        <button id="cal-next"  class="ghost-btn" title="Next week">›</button>
+        <button id="cal-today" class="ghost-btn">Today</button>
+      </div>
+      <div class="cal-legend">
+        <span class="cal-leg leg-requested">requested</span>
+        <span class="cal-leg leg-confirmed">confirmed</span>
+        <span class="cal-leg leg-blocked">blocked</span>
+      </div>
+    </div>
+    <div class="cal-hint" id="cal-hint"></div>
+    <div class="cal-grid-wrap">
+      <div id="cal-grid" class="cal-grid"></div>
+    </div>
+    <div class="cal-requests">
+      <h2 id="cal-requests-title"></h2>
+      <div id="cal-requests-list"></div>
+    </div>
+  </div>
+
 </div>
 
 <!-- LOGIN OVERLAY -->
@@ -241,6 +268,27 @@
     <div class="modal-actions">
       <button id="modal-cancel" class="ghost-btn">Cancel</button>
       <button id="modal-confirm" class="accent-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- BOOKING MODAL (request a coaching session) -->
+<div id="booking-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h3>Request coaching</h3>
+    <div class="booking-when" id="booking-when"></div>
+    <label class="modal-label">Duration</label>
+    <select id="booking-minutes" class="modal-input">
+      <option value="60" selected>60 min</option>
+      <option value="90">90 min</option>
+      <option value="120">120 min</option>
+    </select>
+    <label class="modal-label">Topic <span style="opacity:.5">(optional)</span></label>
+    <input id="booking-topic" class="modal-input" type="text" maxlength="200"
+           placeholder="e.g. VOD review, laning, wave management…" />
+    <div class="modal-actions">
+      <button id="booking-cancel"  class="ghost-btn">Cancel</button>
+      <button id="booking-confirm" class="accent-btn">Send request</button>
     </div>
   </div>
 </div>
